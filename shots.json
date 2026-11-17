@@ -5,25 +5,25 @@
       "scene": "play",
       "seed": 7,
       "region": "ashfen",
-      "caption": "Ash Fen: falling ash, bog pools, and the lantern burning down. HUD shows nights, souls and flares."
+      "caption": "Play: Ash Fen, night 2 of 4. Score, night timer, flares, souls and the lantern gauge, all live."
     },
     {
       "file": "screenshots/2-title.jpg",
       "scene": "start",
       "seed": 7,
-      "caption": "Title: the wood, the rules, and what the lantern is for."
+      "caption": "Title: the premise, the controls, and how to start."
     },
     {
       "file": "screenshots/3-regions.jpg",
       "scene": "select",
       "seed": 7,
-      "caption": "The map of the wood: four regions, each locked until the one before it is cleared."
+      "caption": "The map: four regions in a chain, each locked until the one before it is cleared."
     },
     {
       "file": "screenshots/4-dawn.jpg",
       "scene": "win",
       "seed": 7,
-      "caption": "The last dawn of a region, and the next one opening."
+      "caption": "Victory: the last dawn of The Clearing, with the score and the restart prompt."
     }
   ]
 }

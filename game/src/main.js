@@ -47,7 +47,10 @@ function runShot(name) {
     renderer.draw(world.state, scene.screen, 0, save, scene.cursor ?? 0);
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
-    else window.__shotReady = true;
+    else {
+      window.__shotInfo = { screen: scene.screen, won: world.state.won, over: world.state.over, region: world.state.region.id };
+      window.__shotReady = true;
+    }
   }
   requestAnimationFrame(paint);
 }

@@ -730,9 +730,11 @@ export function createRenderer(canvas) {
     context.font = `700 68px ${FONT_DISPLAY}`;
     context.fillText(won ? 'DAWN' : 'THE LANTERN DIES', VIEW.width / 2, VIEW.height / 2 - 150);
     if (won) {
+      // Say it in words. "DAWN" is the game's metaphor, but a screenshot is read by someone who
+      // does not know the metaphor yet.
       context.fillStyle = palette.gold;
-      context.font = `600 16px ${FONT}`;
-      context.fillText('EVERY NIGHT HELD', VIEW.width / 2, VIEW.height / 2 - 112);
+      context.font = `700 15px ${FONT}`;
+      context.fillText('VICTORY · EVERY NIGHT HELD', VIEW.width / 2, VIEW.height / 2 - 112);
     }
     context.fillStyle = '#c8d2e0';
     context.font = `400 18px ${FONT}`;
@@ -740,13 +742,17 @@ export function createRenderer(canvas) {
       ? `${region.name} is quiet. Something past it is not.`
       : `The dark takes you on night ${state.night} of ${state.nightCount}.`, VIEW.width / 2, VIEW.height / 2 - 92);
 
+    // `best` is the record as it stood before this run, so a new best has to display the score,
+    // not the old record: a row reading "Best 0" under the words NEW BEST is the screen calling
+    // itself a liar.
+    const isNewBest = won && state.score > best && state.score > 0;
+    const shownBest = isNewBest ? state.score : Math.max(best, won ? state.score : best);
     const rows = [
       ['Score', String(state.score)],
       ['Nights held', `${state.nightsSurvived} / ${state.nightCount}`],
       ['Souls rescued', String(state.soulsSaved)],
-      ['Best', String(best)],
+      ['Best', String(shownBest)],
     ];
-    const isNewBest = won && state.score >= best && state.score > 0;
     rows.forEach((row, index) => {
       const y = VIEW.height / 2 - 24 + index * 36;
       context.textAlign = 'right';
@@ -767,9 +773,12 @@ export function createRenderer(canvas) {
     }
     const pulse = 0.55 + Math.sin(state.elapsed * 3.6) * 0.45;
     context.textAlign = 'center';
-    context.fillStyle = `rgba(255,232,190,${0.5 + pulse * 0.5})`;
+    context.fillStyle = `rgba(255,240,208,${0.72 + pulse * 0.28})`;
     context.font = `700 21px ${FONT}`;
     context.fillText('PRESS SPACE TO PLAY AGAIN', VIEW.width / 2, VIEW.height / 2 + 190);
+    context.fillStyle = palette.muted;
+    context.font = `500 14px ${FONT}`;
+    context.fillText('ESC — the map of the wood', VIEW.width / 2, VIEW.height / 2 + 222);
     context.restore();
   }
 
