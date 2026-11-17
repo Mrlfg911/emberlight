@@ -1,16 +1,18 @@
-// EMBERLIGHT — a best-game-01 entry. The game lives in this directory's game/ folder as plain
-// static files (game/index.html and its ES modules, no library, no asset files, no network
-// request), and this program hands it in: it copies game/ and screenshots/ from beside this file
-// to /output and writes /output/dossier.json, the summary the judge reads, with the vendored
-// make.fun library.
+// EMBERLIGHT — a best-game-01 entry. The game itself is the game/ folder beside this file: plain
+// static files (one HTML page and six ES modules) that a desktop browser loads offline, with no
+// library, no image or sound files and no network request. This program is the hand-in: it copies
+// game/ and screenshots/ to the output directory and writes dossier.json there, the summary the
+// judge reads, using the vendored make.fun library unchanged.
 //
-// EMBERLIGHT is a top-down survival game in a dark clearing. You carry the only lantern; it burns
-// down as you move, and the six nights get longer and hold more wolves. Souls and firefly pools
-// are the only way to refill it, and a flare scatters a wolf that has committed to a run.
+// The game: a top-down survival game in a dark clearing. You carry the only lantern, and the
+// lantern is the only thing the wolves are afraid of. It burns down as you move; souls refill it,
+// firefly pools refill it faster, and a flare scatters a wolf that has committed to a run. Six
+// nights, each one longer and holding one more wolf. Let the flame reach zero and the clearing
+// takes you.
 //
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Run it:      node serve.ts            (then open http://localhost:8080)
+// Hand it in:  MAKEFUN_OUTPUT_DIR=out node main.ts
+// In the grader MAKEFUN_OUTPUT_DIR is unset, so the output directory is /output.
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,15 +22,24 @@ import { buildDossier } from './vendor/makefun-game.ts';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+// The two things the entry hands over: the game the browser plays, and the screenshots of it.
+const game = join(here, 'game');
+const shots = join(here, 'screenshots');
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
-// files, in all, or a path under game/ over 1000 bytes: game/ counts beside /output's own 1000-entry cap, its
-// screenshots/ and dossier.json).
+if (!existsSync(join(game, 'index.html'))) {
+  throw new Error(`no game to hand in: ${join(game, 'index.html')} is missing`);
+}
+
+mkdirSync(out, { recursive: true });
+cpSync(game, join(out, 'game'), { recursive: true });
+
+mkdirSync(join(out, 'screenshots'), { recursive: true });
+if (existsSync(shots)) cpSync(shots, join(out, 'screenshots'), { recursive: true });
+
+// The scorer's own caps: the limits it refuses an entry for. Only text_max_bytes shapes the bytes
+// written; the rest refuse an entry the scorer would refuse anyway, so failing here is cheaper
+// than being refused at the gate (more than four screenshots or one over 256 KiB; more than 993
+// files or 48 MiB under game/; a path under game/ over 1000 bytes).
 writeFileSync(
   join(out, 'dossier.json'),
   buildDossier(out, {
