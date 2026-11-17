@@ -3,14 +3,20 @@
 // changes a rule. The world is larger than the window, so the camera keeps the lantern near the
 // centre and everything in the clearing is drawn through one translate.
 import {
-  FONT, FONT_DISPLAY, LIGHT, NIGHTS, PALETTE, PLAYER, POOLS, VIEW, WOLF, WORLD,
+  FONT, FONT_DISPLAY, LIGHT, PALETTE, PLAYER, POOLS, VIEW, WOLF, WORLD,
 } from './config.js';
+import { REGIONS, isUnlocked } from './regions.js';
+import { createBackdrop } from './backdrop.js';
+
+/** The palette in force: PALETTE with the current region's colours folded over it. */
+let palette = { ...PALETTE };
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
 export const SCREEN_PAUSED = 'paused';
 export const SCREEN_OVER = 'over';
 export const SCREEN_WON = 'won';
+export const SCREEN_SELECT = 'select';
 
 const TAU = Math.PI * 2;
 
@@ -38,6 +44,17 @@ const shadowSkip = new Set((params.get('shadow') || '').split(',').filter(Boolea
 
 export function createRenderer(canvas) {
   const context = canvas.getContext('2d', { alpha: false });
+  let region = REGIONS[0];
+  let backdrop = createBackdrop(region, VIEW.height + 260);
+  let particles = null;
+
+  /** Point the renderer at a region: its palette, and its horizon. */
+  function useRegion(next, particleSystem) {
+    region = next;
+    palette = { ...PALETTE, ...(next.palette || {}) };
+    backdrop = createBackdrop(next, VIEW.height + 260);
+    if (particleSystem) particles = particleSystem;
+  }
   const grass = scatter(1201, 1400);
   const stones = scatter(9341, 150);
   const trunks = scatter(3313, 120);
@@ -78,13 +95,19 @@ export function createRenderer(canvas) {
     const left = camera.x - VIEW.width / 2;
     const top = camera.y - VIEW.height / 2;
 
-    context.fillStyle = PALETTE.void;
+    context.fillStyle = palette.void;
     context.fillRect(left, top, VIEW.width, VIEW.height);
+
+    // The horizon, scrolled at its own rate, so the wood has depth behind the floor.
+    context.save();
+    context.translate(0, top);
+    backdrop.draw(context, camera, VIEW.width);
+    context.restore();
 
     // The clearing itself, so the forest reads as a place with an edge you can lose.
     const sky = context.createRadialGradient(WORLD.width / 2, WORLD.height / 2, 120, WORLD.width / 2, WORLD.height / 2, WORLD.width * 0.62);
-    sky.addColorStop(0, PALETTE.haze);
-    sky.addColorStop(0.5, PALETTE.night);
+    sky.addColorStop(0, palette.haze);
+    sky.addColorStop(0.5, palette.night);
     sky.addColorStop(1, '#070b12');
     context.fillStyle = sky;
     context.fillRect(0, 0, WORLD.width, WORLD.height);
@@ -96,7 +119,7 @@ export function createRenderer(canvas) {
     for (const trunk of trunks) {
       const height = 26 + trunk.r * 44;
       const width = 7 + trunk.r * 13;
-      context.fillStyle = PALETTE.trunk;
+      context.fillStyle = palette.trunk;
       context.fillRect(trunk.x - width / 2, trunk.y - height / 2, width, height);
       context.strokeStyle = 'rgba(120,145,180,0.10)';
       context.lineWidth = 1.2;
@@ -105,7 +128,7 @@ export function createRenderer(canvas) {
 
     for (const blade of grass) {
       const height = 7 + blade.r * 18;
-      context.strokeStyle = blade.r > 0.72 ? PALETTE.moss : '#12201b';
+      context.strokeStyle = blade.r > 0.72 ? 'rgba(38,62,52,0.85)' : 'rgba(14,24,20,0.9)';
       context.lineWidth = 1.5;
       context.beginPath();
       context.moveTo(blade.x, blade.y);
@@ -114,7 +137,7 @@ export function createRenderer(canvas) {
     }
 
     for (const stone of stones) {
-      context.fillStyle = stone.r > 0.6 ? '#212b3c' : '#18202d';
+      context.fillStyle = stone.r > 0.6 ? '#161d29' : '#111721';
       context.beginPath();
       context.ellipse(stone.x, stone.y, 6 + stone.r * 12, 4 + stone.r * 7, stone.r * TAU, 0, TAU);
       context.fill();
@@ -215,15 +238,24 @@ export function createRenderer(canvas) {
       context.beginPath();
       context.arc(soul.x, y, 44, 0, TAU);
       context.fill();
-      context.fillStyle = PALETTE.soulCore;
+      // A filled diamond, not a ring: three thin circles on one screen read as one language.
+      const size = 7.4 + Math.sin(soul.phase * 1.9) * 0.9;
+      context.fillStyle = palette.soulCore;
       context.beginPath();
-      context.arc(soul.x, y, 6.2, 0, TAU);
+      context.moveTo(soul.x, y - size);
+      context.lineTo(soul.x + size * 0.74, y);
+      context.lineTo(soul.x, y + size);
+      context.lineTo(soul.x - size * 0.74, y);
+      context.closePath();
       context.fill();
-      context.strokeStyle = `rgba(200,250,255,${0.55 + near * 0.3})`;
-      context.lineWidth = 1.4;
+      context.fillStyle = `rgba(180,240,255,${0.35 + near * 0.4})`;
       context.beginPath();
-      context.arc(soul.x, y, 13 + Math.sin(soul.phase * 1.7) * 2.6, 0, TAU);
-      context.stroke();
+      context.moveTo(soul.x, y - size * 1.7);
+      context.lineTo(soul.x + size * 1.15, y);
+      context.lineTo(soul.x, y + size * 1.7);
+      context.lineTo(soul.x - size * 1.15, y);
+      context.closePath();
+      context.fill();
     }
   }
 
@@ -243,12 +275,21 @@ export function createRenderer(canvas) {
       // two ear triangles that break the skull line, a jaw notch that separates muzzle from chest,
       // and a thick tapered tail. Everything below exaggerates those four, because at 60 px the
       // rest of the anatomy is not worth drawing.
-      const S = 1.22;
-      const body = charging ? '#5b4a5c' : '#49566d';
-      const edge = charging ? '#ff8663' : '#9db2d4';
+      const S = 1.42;
+      const body = charging ? '#7a5f74' : '#6f8099';
+      const edge = charging ? '#ff9ab4' : '#c8dafc';
 
       context.save();
       context.translate(wolf.x, wolf.y);
+      // A soft shadow under the animal, offset away from the lantern, so it is standing on the
+      // ground rather than pasted onto it.
+      const shade = context.createRadialGradient(0, 6, 2, 0, 6, 22);
+      shade.addColorStop(0, 'rgba(2,4,8,0.55)');
+      shade.addColorStop(1, 'rgba(2,4,8,0)');
+      context.fillStyle = shade;
+      context.beginPath();
+      context.ellipse(0, 6, 22, 11, 0, 0, TAU);
+      context.fill();
       const heading = charging
         ? Math.atan2(wolf.vy, wolf.vx)
         : Math.atan2(state.player.y - wolf.y, state.player.x - wolf.x);
@@ -350,7 +391,7 @@ export function createRenderer(canvas) {
       context.globalAlpha = 1;
 
       // Eyes: two hot points set wide on the muzzle end.
-      context.fillStyle = charging ? '#ffd9b4' : '#ff9268';
+      context.fillStyle = charging ? '#ffd0e0' : '#ff5f7a';
       for (const side of [-1, 1]) {
         context.beginPath();
         context.ellipse(23.5, side * 3.1, 1.9, 1.4, 0, 0, TAU);
@@ -373,120 +414,142 @@ export function createRenderer(canvas) {
     const radius = lightRadius(state);
     const x = state.player.x;
     const y = state.player.y;
+    const facing = state.player.facing;
     const flicker = 1 + Math.sin(state.elapsed * 9.1) * 0.05;
-    const halo = context.createRadialGradient(x, y, 0, x, y, radius * 0.62 * flicker);
-    halo.addColorStop(0, 'rgba(255,238,200,0.42)');
-    halo.addColorStop(0.2, 'rgba(255,196,120,0.34)');
-    halo.addColorStop(0.55, 'rgba(255,150,70,0.13)');
+
+    // The lamp hangs out to the side of the body, not over it. Put the brightest point under the
+    // figure and the figure disappears: whatever is most lit reads as an object, not a person.
+    const lampX = facing * 15;
+    const lampY = 6;
+
+    const halo = context.createRadialGradient(x + lampX, y + lampY, 0, x + lampX, y + lampY, radius * 0.62 * flicker);
+    halo.addColorStop(0, 'rgba(255,238,200,0.40)');
+    halo.addColorStop(0.2, 'rgba(255,196,120,0.32)');
+    halo.addColorStop(0.55, 'rgba(255,150,70,0.12)');
     halo.addColorStop(1, 'rgba(255,120,40,0)');
     context.fillStyle = halo;
     context.beginPath();
-    context.arc(x, y, radius * 0.55 * flicker, 0, TAU);
+    context.arc(x + lampX, y + lampY, radius * 0.55 * flicker, 0, TAU);
     context.fill();
 
-    // The lantern is a person: a body, a hood and the light they carry.
     context.save();
     context.translate(x, y);
-    // A contact shadow, so the figure is grounded rather than floating in the glow.
-    const shade = context.createRadialGradient(0, 18, 2, 0, 18, 34);
-    shade.addColorStop(0, 'rgba(0,0,0,0.62)');
-    shade.addColorStop(1, 'rgba(0,0,0,0)');
-    context.fillStyle = shade;
+    // A dark pad under the figure, so the pale parts of it are read against darkness even when
+    // the lantern is at its brightest.
+    const pad = context.createRadialGradient(0, 10, 4, 0, 10, 30);
+    pad.addColorStop(0, 'rgba(3,6,11,0.9)');
+    pad.addColorStop(0.7, 'rgba(3,6,11,0.6)');
+    pad.addColorStop(1, 'rgba(3,6,11,0)');
+    context.fillStyle = pad;
     context.beginPath();
-    context.ellipse(0, 18, 34, 16, 0, 0, TAU);
+    context.ellipse(0, 10, 30, 22, 0, 0, TAU);
     context.fill();
 
-    const facing = state.player.facing;
-    const stride = Math.sin(state.elapsed * 9) * (Math.hypot(state.player.vx, state.player.vy) > 30 ? 2.6 : 0.5);
+    const stride = Math.sin(state.elapsed * 9) * (Math.hypot(state.player.vx, state.player.vy) > 30 ? 2.8 : 0.5);
+    context.scale(1.5, 1.5);
 
-    // Two legs, slightly apart: four pixels of separation is what makes a shape read as a person.
-    context.strokeStyle = '#0a0f16';
-    context.lineWidth = 5;
+    // Legs: two dark strokes with ground between them.
+    context.strokeStyle = '#080d14';
+    context.lineWidth = 4.4;
     context.lineCap = 'round';
     for (const side of [-1, 1]) {
       context.beginPath();
-      context.moveTo(side * 4, 4);
-      context.lineTo(side * 5 + stride * side, 16);
+      context.moveTo(side * 4, 3);
+      context.lineTo(side * 5 + stride * side, 14);
       context.stroke();
     }
     context.lineCap = 'butt';
 
-    // The coat: a tapered torso, narrower at the shoulders than the hem.
-    context.fillStyle = '#111a26';
+    // The coat: near-black, so the body is the darkest solid on screen and the rim is what reads.
+    context.fillStyle = '#0c141f';
     context.beginPath();
-    context.moveTo(-7.5, -6);
-    context.lineTo(7.5, -6);
-    context.lineTo(10, 8);
-    context.lineTo(-10, 8);
+    context.moveTo(-7.5, -7);
+    context.lineTo(7.5, -7);
+    context.lineTo(9.5, 7);
+    context.lineTo(-9.5, 7);
     context.closePath();
     context.fill();
-    context.strokeStyle = 'rgba(255,236,200,0.9)';
-    context.lineWidth = 1.8;
+
+    // A warm rim down the lit side and along the shoulders: this is the shape a viewer latches on.
+    context.strokeStyle = 'rgba(255,214,158,0.95)';
+    context.lineWidth = 2.1;
     context.beginPath();
-    context.moveTo(-7.5, -6);
-    context.lineTo(-10, 8);
-    context.lineTo(10, 8);
-    context.lineTo(7.5, -6);
+    context.moveTo(-7.5, -7);
+    context.lineTo(-9.5, 7);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(-7.5, -7);
+    context.lineTo(7.5, -7);
     context.stroke();
 
-    // A pale scarf, the one cool colour the player owns, so they never read as a wolf.
-    context.fillStyle = '#cfe4ff';
+    // The scarf, the one cool colour the player owns.
+    context.fillStyle = '#b9d6ff';
     context.beginPath();
-    context.ellipse(0, -6.5, 7.5, 2.6, 0, 0, TAU);
+    context.ellipse(0, -7.2, 7.2, 2.4, 0, 0, TAU);
     context.fill();
 
-    // The hood and head.
+    // Hood: filled, and sitting low enough to overlap the collar, so head and body are one
+    // silhouette with a neck rather than a ring floating above a mass.
     context.fillStyle = '#16212f';
     context.beginPath();
-    context.arc(0, -11, 7.6, 0, TAU);
+    context.arc(0, -9.4, 6.6, 0, TAU);
     context.fill();
-    context.strokeStyle = 'rgba(200,222,250,0.85)';
-    context.lineWidth = 1.6;
+    // Shoulders, drawn after the head, welding the two masses together.
+    context.fillStyle = '#0c141f';
     context.beginPath();
-    context.arc(0, -11, 7.6, 0, TAU);
+    context.moveTo(-8.4, -6.6);
+    context.quadraticCurveTo(0, -12.4, 8.4, -6.6);
+    context.lineTo(8.4, -4);
+    context.lineTo(-8.4, -4);
+    context.closePath();
+    context.fill();
+    // A warm rim over the crown, on the lamp side only, so the head turns with the light.
+    context.strokeStyle = 'rgba(255,214,158,0.9)';
+    context.lineWidth = 1.9;
+    context.beginPath();
+    context.arc(0, -9.4, 6.6, Math.PI * (facing > 0 ? 1.02 : 1.3), Math.PI * (facing > 0 ? 1.72 : 1.98));
     context.stroke();
-    // A face turned the way the player is walking.
-    context.fillStyle = 'rgba(255,225,185,0.85)';
+    // The face, turned the way the player walks.
+    context.fillStyle = 'rgba(255,231,196,0.92)';
     context.beginPath();
-    context.ellipse(facing * 2.6, -10, 2.4, 2.8, 0, 0, TAU);
+    context.ellipse(facing * 2.9, -9.4, 2.2, 2.6, 0, 0, TAU);
     context.fill();
 
-    // The arm holding the lantern, and the lantern hanging from it on a short handle.
-    const handX = facing * 11;
-    context.strokeStyle = '#16212f';
-    context.lineWidth = 3.4;
+    // The arm out to the lamp, and the lamp itself: small, hot, and clearly a held object.
+    context.strokeStyle = '#101a27';
+    context.lineWidth = 3.2;
     context.lineCap = 'round';
     context.beginPath();
     context.moveTo(facing * 5, -4);
-    context.lineTo(handX, 2);
+    context.lineTo(lampX, lampY - 3);
     context.stroke();
     context.lineCap = 'butt';
 
-    context.strokeStyle = 'rgba(255,220,170,0.7)';
-    context.lineWidth = 1.4;
+    context.strokeStyle = 'rgba(255,214,160,0.8)';
+    context.lineWidth = 1.3;
     context.beginPath();
-    context.moveTo(handX, 2);
-    context.lineTo(handX + facing * 2, 7);
+    context.moveTo(lampX, lampY - 3);
+    context.lineTo(lampX, lampY + 2);
     context.stroke();
 
-    const lampX = handX + facing * 2;
-    const lampY = 12;
-    const lampGlow = context.createRadialGradient(lampX, lampY, 0, lampX, lampY, 30);
-    lampGlow.addColorStop(0, 'rgba(255,248,224,1)');
-    lampGlow.addColorStop(0.24, 'rgba(255,206,132,0.8)');
+    const lampGlow = context.createRadialGradient(lampX, lampY + 3, 0, lampX, lampY + 3, 22);
+    lampGlow.addColorStop(0, 'rgba(255,248,224,0.95)');
+    lampGlow.addColorStop(0.26, 'rgba(255,206,132,0.55)');
     lampGlow.addColorStop(1, 'rgba(255,150,70,0)');
     context.fillStyle = lampGlow;
     context.beginPath();
-    context.arc(lampX, lampY, 30, 0, TAU);
+    context.arc(lampX, lampY + 3, 22, 0, TAU);
     context.fill();
-    context.fillStyle = PALETTE.lanternCore;
+    // A hard dark housing with a bright window: an object, not a glow stuck to the coat.
+    context.fillStyle = '#0a0f16';
     context.beginPath();
-    context.arc(lampX, lampY, 5.6, 0, TAU);
+    context.roundRect(lampX - 3.6, lampY - 0.4, 7.2, 8.4, 1.6);
     context.fill();
-    context.fillStyle = PALETTE.lantern;
+    context.fillStyle = palette.lanternCore;
     context.beginPath();
-    context.arc(lampX, lampY, 3.1, 0, TAU);
+    context.arc(lampX, lampY + 3.2, 2.5, 0, TAU);
     context.fill();
+
     context.restore();
   }
 
@@ -529,7 +592,7 @@ export function createRenderer(canvas) {
     context.stroke();
 
     const grade = context.createLinearGradient(x - 44, y - 44, x + 44, y + 44);
-    grade.addColorStop(0, light < 0.3 ? '#ff4e3a' : PALETTE.gold);
+    grade.addColorStop(0, light < 0.3 ? '#ff4e3a' : palette.gold);
     grade.addColorStop(1, light < 0.3 ? '#ff8a3d' : '#ffb257');
     context.strokeStyle = grade;
     context.lineCap = 'round';
@@ -539,55 +602,71 @@ export function createRenderer(canvas) {
     context.stroke();
     context.lineCap = 'butt';
 
-    context.fillStyle = PALETTE.text;
+    context.fillStyle = palette.text;
     context.font = `700 24px ${FONT}`;
     context.textAlign = 'center';
     context.textBaseline = 'middle';
     context.fillText(`${Math.round(light * 100)}`, x, y - 3);
     context.font = `600 10px ${FONT}`;
-    context.fillStyle = PALETTE.muted;
+    context.fillStyle = palette.muted;
     context.fillText('LIGHT %', x, y + 18);
     context.restore();
   }
 
   function hud(state) {
     context.save();
+    // A scrim behind the top bar and the light dial. Wolves walk into the HUD otherwise, and a
+    // wolf's silhouette over a night counter reads as neither.
+    const scrim = context.createLinearGradient(0, 0, 0, 118);
+    scrim.addColorStop(0, 'rgba(4,7,12,0.82)');
+    scrim.addColorStop(0.72, 'rgba(4,7,12,0.36)');
+    scrim.addColorStop(1, 'rgba(4,7,12,0)');
+    context.fillStyle = scrim;
+    context.fillRect(0, 0, VIEW.width, 118);
+    const dial = context.createRadialGradient(96, VIEW.height - 66, 8, 96, VIEW.height - 66, 92);
+    dial.addColorStop(0, 'rgba(4,7,12,0.72)');
+    dial.addColorStop(1, 'rgba(4,7,12,0)');
+    context.fillStyle = dial;
+    context.fillRect(0, VIEW.height - 158, 200, 158);
     context.textBaseline = 'top';
     context.textAlign = 'left';
-    context.fillStyle = PALETTE.text;
-    context.font = `700 36px ${FONT}`;
-    context.fillText(String(state.score), 44, 32);
+    context.fillStyle = palette.text;
+    context.font = `700 24px ${FONT}`;
+    context.fillText(String(state.score), 44, 34);
     context.font = `600 11px ${FONT}`;
-    context.fillStyle = PALETTE.muted;
+    context.fillStyle = palette.muted;
     context.fillText('SCORE', 46, 74);
 
     // Night and its clock.
-    const plan = NIGHTS[Math.min(state.night - 1, NIGHTS.length - 1)];
+    const plan = state.nights[Math.min(state.night - 1, state.nights.length - 1)];
     const progress = Math.min(1, state.nightElapsed / plan.seconds);
     context.textAlign = 'center';
-    context.fillStyle = PALETTE.text;
+    context.fillStyle = palette.muted;
+    context.font = `600 10px ${FONT}`;
+    context.fillText(region.name.toUpperCase(), VIEW.width / 2, 14);
+    context.fillStyle = palette.text;
     context.font = `700 21px ${FONT}`;
-    context.fillText(`NIGHT ${state.night} OF ${NIGHTS.length}`, VIEW.width / 2, 30);
+    context.fillText(`NIGHT ${state.night} OF ${state.nightCount}`, VIEW.width / 2, 30);
     context.fillStyle = 'rgba(255,255,255,0.14)';
     context.fillRect(VIEW.width / 2 - 120, 62, 240, 6);
-    context.fillStyle = PALETTE.lantern;
+    context.fillStyle = palette.lantern;
     context.fillRect(VIEW.width / 2 - 120, 62, 240 * progress, 6);
-    context.fillStyle = PALETTE.muted;
+    context.fillStyle = palette.muted;
     context.font = `500 10px ${FONT}`;
     context.fillText(`${Math.max(0, Math.ceil(plan.seconds - state.nightElapsed))}s of dark left`, VIEW.width / 2, 74);
 
     // Souls and flares, top right.
     context.textAlign = 'right';
-    context.fillStyle = PALETTE.soul;
+    context.fillStyle = palette.soul;
     context.font = `700 19px ${FONT}`;
-    context.fillText(`◇ ${state.soulsSaved}`, VIEW.width - 44, 32);
-    context.fillStyle = PALETTE.muted;
+    context.fillText(`◇ ${state.soulsSaved}/${state.soulsTarget}`, VIEW.width - 44, 32);
+    context.fillStyle = palette.muted;
     context.font = `600 10px ${FONT}`;
     context.fillText('SOULS', VIEW.width - 44, 56);
-    context.fillStyle = PALETTE.gold;
+    context.fillStyle = palette.gold;
     context.font = `700 19px ${FONT}`;
     context.fillText(`✦ ${state.flares}`, VIEW.width - 152, 32);
-    context.fillStyle = PALETTE.muted;
+    context.fillStyle = palette.muted;
     context.font = `600 10px ${FONT}`;
     context.fillText('FLARES', VIEW.width - 152, 56);
     context.fillStyle = 'rgba(180,195,215,0.55)';
@@ -616,28 +695,28 @@ export function createRenderer(canvas) {
     context.fillStyle = 'rgba(4,6,11,0.76)';
     context.fillRect(0, 0, VIEW.width, VIEW.height);
     context.textAlign = 'center';
-    context.fillStyle = PALETTE.lanternCore;
+    context.fillStyle = palette.lanternCore;
     context.font = `700 92px ${FONT_DISPLAY}`;
     context.fillText('EMBERLIGHT', VIEW.width / 2, VIEW.height / 2 - 128);
-    context.fillStyle = PALETTE.lantern;
+    context.fillStyle = palette.lantern;
     context.font = `500 20px ${FONT}`;
     context.fillText('The dark is hungry. Your lantern is all you have.', VIEW.width / 2, VIEW.height / 2 - 68);
-    context.fillStyle = PALETTE.gold;
+    context.fillStyle = palette.gold;
     context.font = `600 19px ${FONT}`;
-    context.fillText('Survive six nights. Walk into a soul to gather it; stand in a pool to drink.', VIEW.width / 2, VIEW.height / 2 + 2);
+    context.fillText('Light the lantern, cross four regions, gather the souls the dark left behind.', VIEW.width / 2, VIEW.height / 2 + 2);
     context.fillStyle = '#b9c4d4';
     context.font = `400 17px ${FONT}`;
     context.fillText('WASD or arrows to move · F strikes a flare and scatters the wolves · P pauses', VIEW.width / 2, VIEW.height / 2 + 36);
-    context.fillStyle = PALETTE.muted;
+    context.fillStyle = palette.muted;
     context.font = `400 15px ${FONT}`;
     context.fillText('The lantern burns down as you move. Souls and pools are the only way back up.', VIEW.width / 2, VIEW.height / 2 + 68);
     const pulse = 0.55 + Math.sin(state.elapsed * 3.6) * 0.45;
     context.fillStyle = `rgba(255,232,190,${0.5 + pulse * 0.5})`;
     context.font = `700 23px ${FONT}`;
     context.fillText('PRESS SPACE OR CLICK TO LIGHT THE LANTERN', VIEW.width / 2, VIEW.height / 2 + 156);
-    context.fillStyle = PALETTE.muted;
+    context.fillStyle = palette.muted;
     context.font = `500 14px ${FONT}`;
-    context.fillText(best > 0 ? `Best score ${best}` : 'Six nights. One lantern.', VIEW.width / 2, VIEW.height / 2 + 200);
+    context.fillText(best > 0 ? `Best run ${best}` : 'Four regions. One lantern.', VIEW.width / 2, VIEW.height / 2 + 200);
     context.restore();
   }
 
@@ -647,23 +726,23 @@ export function createRenderer(canvas) {
     context.fillStyle = `rgba(6,9,16,${won ? 0.86 : 0.9})`;
     context.fillRect(0, 0, VIEW.width, VIEW.height);
     context.textAlign = 'center';
-    context.fillStyle = won ? PALETTE.gold : PALETTE.danger;
+    context.fillStyle = won ? palette.gold : palette.danger;
     context.font = `700 68px ${FONT_DISPLAY}`;
     context.fillText(won ? 'DAWN' : 'THE LANTERN DIES', VIEW.width / 2, VIEW.height / 2 - 150);
     if (won) {
-      context.fillStyle = PALETTE.gold;
+      context.fillStyle = palette.gold;
       context.font = `600 16px ${FONT}`;
-      context.fillText('SIX NIGHTS SURVIVED', VIEW.width / 2, VIEW.height / 2 - 112);
+      context.fillText('EVERY NIGHT HELD', VIEW.width / 2, VIEW.height / 2 - 112);
     }
     context.fillStyle = '#c8d2e0';
     context.font = `400 18px ${FONT}`;
     context.fillText(won
-      ? 'Six nights held. The forest lets you go.'
-      : `The dark takes the clearing on night ${state.night}.`, VIEW.width / 2, VIEW.height / 2 - 92);
+      ? `${region.name} is quiet. Something past it is not.`
+      : `The dark takes you on night ${state.night} of ${state.nightCount}.`, VIEW.width / 2, VIEW.height / 2 - 92);
 
     const rows = [
       ['Score', String(state.score)],
-      ['Nights survived', `${state.nightsSurvived} / ${NIGHTS.length}`],
+      ['Nights held', `${state.nightsSurvived} / ${state.nightCount}`],
       ['Souls rescued', String(state.soulsSaved)],
       ['Best', String(best)],
     ];
@@ -671,18 +750,18 @@ export function createRenderer(canvas) {
     rows.forEach((row, index) => {
       const y = VIEW.height / 2 - 24 + index * 36;
       context.textAlign = 'right';
-      context.fillStyle = PALETTE.muted;
+      context.fillStyle = palette.muted;
       context.font = `400 17px ${FONT}`;
       context.fillText(row[0], VIEW.width / 2 - 18, y);
       context.textAlign = 'left';
-      context.fillStyle = PALETTE.text;
+      context.fillStyle = palette.text;
       context.font = `700 18px ${FONT}`;
       context.fillText(row[1], VIEW.width / 2 + 18, y);
     });
 
     if (isNewBest) {
       context.textAlign = 'center';
-      context.fillStyle = PALETTE.gold;
+      context.fillStyle = palette.gold;
       context.font = `700 15px ${FONT}`;
       context.fillText('NEW BEST', VIEW.width / 2, VIEW.height / 2 + 118);
     }
@@ -694,15 +773,185 @@ export function createRenderer(canvas) {
     context.restore();
   }
 
+
+  /** The map of the wood: four regions, the locked ones greyed, the cleared ones marked. */
+  function selectScreen(state, save, cursor) {
+    context.save();
+    context.fillStyle = 'rgba(4,6,11,0.88)';
+    context.fillRect(0, 0, VIEW.width, VIEW.height);
+    context.textAlign = 'center';
+    context.fillStyle = palette.lanternCore;
+    context.font = `700 54px ${FONT_DISPLAY}`;
+    context.fillText('THE WOOD', VIEW.width / 2, 66);
+    context.fillStyle = palette.muted;
+    context.font = `500 14px ${FONT}`;
+    context.fillText(`${save.embers} embers carried out · ${save.runs} runs walked`, VIEW.width / 2, 96);
+    context.fillStyle = 'rgba(150,170,200,0.72)';
+    context.font = `400 12px ${FONT}`;
+    context.fillText('A run ends when the lantern does. Souls gathered and embers carried out are kept.', VIEW.width / 2, 116);
+
+    const cardW = 262;
+    const cardH = 330;
+    const gap = 26;
+    const total = REGIONS.length * cardW + (REGIONS.length - 1) * gap;
+    const startX = (VIEW.width - total) / 2;
+    const top = 140;
+
+    REGIONS.forEach((entry, index) => {
+      const x = startX + index * (cardW + gap);
+      const open = isUnlocked(save, index);
+      const cleared = Boolean(save.cleared[entry.id]);
+      const selected = index === cursor;
+
+      // Card ground: the region's own colour, dimmed hard when locked.
+      const tint = entry.palette.haze;
+      context.globalAlpha = open ? 1 : 0.78;
+      const ground = context.createLinearGradient(x, top, x, top + cardH);
+      ground.addColorStop(0, tint);
+      ground.addColorStop(1, '#0a0e16');
+      context.fillStyle = ground;
+      context.beginPath();
+      context.roundRect(x, top, cardW, cardH, 10);
+      context.fill();
+
+      if (selected && open) {
+        context.strokeStyle = palette.lantern;
+        context.lineWidth = 2.6;
+        context.setLineDash([]);
+      } else if (selected) {
+        // A locked card can still hold the cursor, so it needs its own ring rather than the
+        // confident gold one that means "walk in".
+        context.strokeStyle = 'rgba(190,205,230,0.55)';
+        context.lineWidth = 2;
+        context.setLineDash([4, 4]);
+      } else if (open) {
+        context.strokeStyle = 'rgba(170,190,220,0.3)';
+        context.lineWidth = 1.3;
+        context.setLineDash([]);
+      } else {
+        // Dashed, so a shut region never reads as merely unselected.
+        context.strokeStyle = 'rgba(150,168,196,0.42)';
+        context.lineWidth = 1.4;
+        context.setLineDash([7, 6]);
+      }
+      context.stroke();
+      context.setLineDash([]);
+      context.globalAlpha = 1;
+
+      // A skyline strip drawn from the region's own layer recipe would be heavy here; a band of
+      // its accent colour plus its icon is enough to tell four places apart at a glance.
+      context.save();
+      context.beginPath();
+      context.roundRect(x, top, cardW, cardH, 10);
+      context.clip();
+      context.fillStyle = entry.accent;
+      context.globalAlpha = open ? 0.16 : 0.04;
+      context.fillRect(x, top, cardW, 96);
+      context.globalAlpha = 1;
+      context.restore();
+
+      context.textAlign = 'center';
+      context.fillStyle = open ? palette.text : 'rgba(200,210,225,0.5)';
+      context.font = `700 24px ${FONT_DISPLAY}`;
+      context.fillText(entry.name, x + cardW / 2, top + 52);
+      context.fillStyle = open ? entry.accent : 'rgba(180,195,215,0.45)';
+      context.font = `500 12px ${FONT}`;
+      context.fillText(entry.subtitle, x + cardW / 2, top + 76);
+
+      context.fillStyle = open ? 'rgba(230,239,252,0.94)' : 'rgba(212,224,242,0.86)';
+      context.font = `400 13px ${FONT}`;
+      // Two lines only. A third line pushes the stats down and the footer collides, so the
+      // blurb is clamped and the card grid keeps one rhythm.
+      wrapText(entry.blurb, x + cardW / 2, top + 118, cardW - 40, 19, 2);
+
+      // Bookkeeping: nights, souls asked for, best.
+      const rows = [
+        ['NIGHTS', String(entry.nights)],
+        ['SOULS', String(entry.soulsTarget)],
+        ['BEST', save.best[entry.id] ? String(save.best[entry.id]) : '—'],
+      ];
+      rows.forEach((row, r) => {
+        const y = top + 196 + r * 32;
+        context.textAlign = 'left';
+        context.fillStyle = 'rgba(160,180,210,0.7)';
+        context.font = `600 10px ${FONT}`;
+        context.fillText(row[0], x + 24, y);
+        context.textAlign = 'right';
+        const empty = row[1] === '—';
+        context.fillStyle = empty ? 'rgba(150,166,190,0.55)' : (open ? palette.text : 'rgba(200,214,234,0.7)');
+        context.font = empty ? `400 15px ${FONT}` : `700 15px ${FONT}`;
+        context.fillText(row[1], x + cardW - 24, y - 2);
+      });
+
+      if (cleared) {
+        context.textAlign = 'center';
+        context.fillStyle = palette.gold;
+        context.font = `700 12px ${FONT}`;
+        context.fillText('✦ CLEARED', x + cardW / 2, top + cardH - 26);
+      } else if (!open) {
+        // Say what would open it, not just that it is shut: a player should never have to guess.
+        // The lock sits above the line rather than beside it, so a long region name never collides
+        // with the glyph and nothing is clipped by the card's own width.
+        const gate = index > 0 ? `Unlocks after ${REGIONS[index - 1].name}` : 'Unlocks after the wood before it';
+        const lockX = x + cardW / 2;
+        const lockY = top + cardH - 58;
+
+        context.strokeStyle = 'rgba(226,236,250,0.72)';
+        context.lineWidth = 1.5;
+        context.beginPath();
+        context.arc(lockX, lockY - 3, 3.2, Math.PI, 0);
+        context.stroke();
+        context.fillStyle = 'rgba(226,236,250,0.72)';
+        context.beginPath();
+        context.roundRect(lockX - 5, lockY - 3, 10, 7.5, 2);
+        context.fill();
+
+        context.textAlign = 'center';
+        context.fillStyle = 'rgba(232,241,253,0.92)';
+        context.font = `600 11px ${FONT}`;
+        context.fillText(gate, x + cardW / 2, top + cardH - 34);
+      }
+    });
+
+    const pulse = 0.55 + Math.sin(state.elapsed * 3.6) * 0.45;
+    context.textAlign = 'center';
+    context.fillStyle = `rgba(255,232,190,${0.45 + pulse * 0.55})`;
+    context.font = `700 18px ${FONT}`;
+    context.fillText('A / D or ← → to choose · SPACE to walk in', VIEW.width / 2, top + cardH + 46);
+    context.fillStyle = palette.muted;
+    context.font = `500 12px ${FONT}`;
+    context.fillText('R forgets everything you have saved', VIEW.width / 2, top + cardH + 70);
+    context.restore();
+  }
+
+  /** Break a sentence onto lines at a given width. */
+  function wrapText(text, centreX, top, maxWidth, lineHeight, maxLines = Infinity) {
+    const words = text.split(' ');
+    let line = '';
+    let y = top;
+    for (const word of words) {
+      const attempt = line ? `${line} ${word}` : word;
+      if (context.measureText(attempt).width > maxWidth && line) {
+        context.fillText(line, centreX, y);
+        line = word;
+        y += lineHeight;
+        if (y > top + (maxLines - 1) * lineHeight) return;
+      } else {
+        line = attempt;
+      }
+    }
+    if (line) context.fillText(line, centreX, y);
+  }
+
   function pausedScreen() {
     context.save();
     context.fillStyle = 'rgba(4,6,11,0.62)';
     context.fillRect(0, 0, VIEW.width, VIEW.height);
     context.textAlign = 'center';
-    context.fillStyle = PALETTE.text;
+    context.fillStyle = palette.text;
     context.font = `700 52px ${FONT_DISPLAY}`;
     context.fillText('PAUSED', VIEW.width / 2, VIEW.height / 2 - 16);
-    context.fillStyle = PALETTE.muted;
+    context.fillStyle = palette.muted;
     context.font = `400 16px ${FONT}`;
     context.fillText('P or SPACE to carry on', VIEW.width / 2, VIEW.height / 2 + 30);
     context.restore();
@@ -720,13 +969,13 @@ export function createRenderer(canvas) {
     context.save();
     context.globalAlpha = Math.max(0, fade) * 0.9;
     context.textAlign = 'center';
-    context.fillStyle = PALETTE.text;
+    context.fillStyle = palette.text;
     context.font = `600 15px ${FONT}`;
-    context.fillText('WASD / arrows to move · F to strike a flare · drink where the fireflies gather', VIEW.width / 2, VIEW.height - 44);
+    context.fillText('WASD to move  ·  F flare  ·  stand in a pool to drink', VIEW.width / 2, 128);
     context.restore();
   }
 
-  function draw(state, screen, best) {
+  function draw(state, screen, best, save, cursor) {
     resize();
     if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED || screen === SCREEN_TITLE
       || screen === SCREEN_OVER || screen === SCREEN_WON) {
@@ -734,7 +983,7 @@ export function createRenderer(canvas) {
     }
     context.save();
     context.setTransform(1, 0, 0, 1, 0, 0);
-    context.fillStyle = PALETTE.void;
+    context.fillStyle = palette.void;
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.setTransform(scale, 0, 0, scale, offsetX, offsetY);
     context.beginPath();
@@ -749,6 +998,7 @@ export function createRenderer(canvas) {
     if (on('souls')) souls(state);
     if (on('wolves')) wolves(state);
     if (on('lantern')) lantern(state);
+    if (particles && on('particles')) particles.draw(context);
     context.restore();
 
     // Light and dust are drawn in view space: they belong to the eye, not the clearing.
@@ -761,6 +1011,7 @@ export function createRenderer(canvas) {
 
     if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED) hud(state);
     if (screen === SCREEN_TITLE) titleScreen(state, best);
+    if (screen === SCREEN_SELECT) selectScreen(state, save, cursor);
     if (screen === SCREEN_PAUSED) pausedScreen();
     if (screen === SCREEN_OVER || screen === SCREEN_WON) overScreen(state, best);
     if (screen === SCREEN_PLAY) hint(state);
@@ -768,5 +1019,5 @@ export function createRenderer(canvas) {
     context.restore();
   }
 
-  return { draw, resize, camera };
+  return { draw, resize, camera, useRegion };
 }

@@ -3,8 +3,9 @@
 // that pass. step() advances one fixed step and returns what happened as bit flags, so the caller
 // plays sound and shows messages without the world knowing about screens or audio.
 import {
-  FLARE, LIGHT, NIGHTS, PLAYER, POOLS, SOULS, WOLF, WORLD,
+  FLARE, LIGHT, PLAYER, POOLS, SOULS, WOLF, WORLD,
 } from './config.js';
+import { REGIONS } from './regions.js';
 
 export const EVENT_SOUL = 1;
 export const EVENT_DRINK = 2;
@@ -22,7 +23,11 @@ function clamp(value, low, high) {
   return value < low ? low : value > high ? high : value;
 }
 
-export function createWorld(random) {
+export function createWorld(random, region = REGIONS[0]) {
+  const nights = region.wolves.map((wolves, index) => ({
+    wolves,
+    seconds: region.nightSeconds[index] || region.nightSeconds[region.nightSeconds.length - 1],
+  }));
   const player = { x: WORLD.width / 2, y: WORLD.height / 2, vx: 0, vy: 0, facing: 1 };
 
   const souls = [];
@@ -32,7 +37,7 @@ export function createWorld(random) {
 
   const pools = [];
   for (let index = 0; index < POOLS.count; index += 1) {
-    pools.push({ x: 0, y: 0, charge: 1 });
+    pools.push({ x: 0, y: 0, charge: 1, dead: false });
   }
 
   const wolves = [];
@@ -59,6 +64,11 @@ export function createWorld(random) {
     drinking: 0,
     over: false,
     won: false,
+    region,
+    nights,
+    nightCount: nights.length,
+    hazard: region.hazard,
+    soulsTarget: region.soulsTarget,
   };
 
   function lightRadius() {
@@ -67,7 +77,7 @@ export function createWorld(random) {
   }
 
   function nightPlan() {
-    return NIGHTS[Math.min(state.night - 1, NIGHTS.length - 1)];
+    return nights[Math.min(state.night - 1, nights.length - 1)];
   }
 
   function spawnSoul() {
@@ -131,7 +141,16 @@ export function createWorld(random) {
     state.drinking = 0;
     state.over = false;
     state.won = false;
+    state.soulsTarget = region.soulsTarget;
     placePools();
+    // A region may keep fewer pools, and make each one slower to come back. The Long Dark does
+    // both: three pools, and half a minute before one is worth drinking again.
+    const kept = region.poolCount || pools.length;
+    for (let index = 0; index < pools.length; index += 1) {
+      pools[index].dead = index >= kept;
+      if (pools[index].dead) pools[index].charge = 0;
+    }
+    state.poolRefill = region.poolRefill || POOLS.refillSeconds;
     addWolves(nightPlan().wolves);
   }
 
@@ -180,8 +199,8 @@ export function createWorld(random) {
 
     const plan = nightPlan();
     if (state.nightElapsed >= plan.seconds && !harmless) {
-      if (state.night >= NIGHTS.length) {
-        state.nightsSurvived = NIGHTS.length;
+      if (state.night >= state.nightCount) {
+        state.nightsSurvived = state.nightCount;
         state.score += 500;
         return endRun(true);
       }
@@ -211,15 +230,20 @@ export function createWorld(random) {
 
     // The lantern burns faster while you run, and each night burns hotter.
     const speed = Math.hypot(player.vx, player.vy) / PLAYER.speed;
-    const drain = LIGHT.drainIdle + (LIGHT.drainMoving - LIGHT.drainIdle) * speed
+    let drain = LIGHT.drainIdle + (LIGHT.drainMoving - LIGHT.drainIdle) * speed
       + LIGHT.drainPerNight * (state.night - 1);
+    // Hollow Pines: the canopy drinks a little of what the lantern gives off, all the time.
+    if (state.hazard === 'canopy') drain += 0.0012;
+    // Ash Fen: standing still in the fog costs nothing extra, but moving blind costs more.
+    if (state.hazard === 'fog' && speed > 0.4) drain += 0.0010;
     if (!harmless) state.light = clamp(state.light - drain * dt, 0, 1);
 
     // Firefly pools: standing in one refills the lantern and keeps the wolves at bay.
     state.drinking = 0;
     for (const pool of pools) {
+      if (pool.dead) continue;
       if (pool.charge <= 0) {
-        pool.charge = Math.min(1, pool.charge + dt / POOLS.refillSeconds);
+        pool.charge = Math.min(1, pool.charge + dt / state.poolRefill);
         continue;
       }
       const dx = player.x - pool.x;

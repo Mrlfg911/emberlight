@@ -28,7 +28,7 @@ export const LIGHT = {
   drainIdle: 0.009,
   drainMoving: 0.017,
   /** Each night burns a little hotter than the one before it. */
-  drainPerNight: 0.0028,
+  drainPerNight: 0.0016,
   /** What a rescued soul and a firefly pool give back. */
   soulGain: 0.24,
   poolGainPerSecond: 0.34,

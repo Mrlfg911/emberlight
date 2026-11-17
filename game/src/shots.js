@@ -1,164 +1,191 @@
-// The scenes behind ?shot=start|play|end|win. Each one plays the real rules forward from a fresh
-// world for a fixed number of steps, steered by an autopilot, so the frame is what a real run
-// looks like and the same seed always gives the same frame. Nothing here is drawn specially: the
-// renderer paints state exactly as it does in play.
-import { WOLF, WORLD } from './config.js';
-import { EVENT_OVER } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WON } from './render.js';
+// The scenes behind ?shot=..., and a headless referee. Each scene plays the real rules forward from
+// a fresh world for a fixed number of steps, steered by an autopilot, so the frame is what a real
+// run looks like rather than a hand-placed tableau.
+import {
+  createWorld, EVENT_OVER,
+} from './world.js';
+import {
+  SCREEN_OVER, SCREEN_PLAY, SCREEN_SELECT, SCREEN_TITLE, SCREEN_WON,
+} from './render.js';
 
-const START_SECONDS = 6;
+const noop = () => {};
 
-/**
- * The autopilot: head for the nearest soul when the lantern is healthy, otherwise for the nearest
- * pool with charge, and lean away from any wolf that is closing in. It plays the game as a careful
- * person would, so the screenshot shows real play and not a staged tableau.
- */
-function autopilot(state) {
+/** Fly the lantern toward the nearest thing worth having, and strike when a wolf is close. */
+function autopilot(world, particles) {
+  const state = world.state;
   const player = state.player;
-  let targetX = WORLD.width / 2;
-  let targetY = WORLD.height / 2;
-  let bestCost = Infinity;
 
-  const wantsLight = state.light < 0.45;
-  if (wantsLight) {
-    for (const pool of state.pools) {
-      if (pool.charge < 0.08) continue;
-      const cost = Math.hypot(pool.x - player.x, pool.y - player.y);
-      if (cost < bestCost) {
-        bestCost = cost;
-        targetX = pool.x;
-        targetY = pool.y;
-      }
+  let targetX = player.x;
+  let targetY = player.y;
+  let found = false;
+
+  // Light first. A run does not end because a wolf was close; it ends because the lantern emptied,
+  // so a pool within reach always outranks a soul, even a soul right next to the player.
+  const thirsty = state.light < 0.45;
+  let bestPool = null;
+  let bestPoolDistance = Infinity;
+  for (const pool of state.pools) {
+    if (pool.dead || pool.charge < 0.06) continue;
+    const distance = Math.hypot(pool.x - player.x, pool.y - player.y);
+    if (distance < bestPoolDistance) {
+      bestPoolDistance = distance;
+      bestPool = pool;
     }
   }
-  if (bestCost === Infinity) {
+  if (bestPool && (thirsty || bestPoolDistance < 200)) {
+    targetX = bestPool.x;
+    targetY = bestPool.y;
+    found = true;
+  }
+
+  // Then souls, nearest first.
+  if (!found || (!thirsty && bestPoolDistance > 200)) {
+    let bestSoul = null;
+    let bestSoulDistance = Infinity;
     for (const soul of state.souls) {
       if (!soul.active) continue;
-      const cost = Math.hypot(soul.x - player.x, soul.y - player.y);
-      if (cost < bestCost) {
-        bestCost = cost;
-        targetX = soul.x;
-        targetY = soul.y;
+      const distance = Math.hypot(soul.x - player.x, soul.y - player.y);
+      if (distance < bestSoulDistance) {
+        bestSoulDistance = distance;
+        bestSoul = soul;
       }
+    }
+    if (bestSoul) {
+      targetX = bestSoul.x;
+      targetY = bestSoul.y;
+      found = true;
     }
   }
 
-  let dx = targetX - player.x;
-  let dy = targetY - player.y;
+  if (!found) {
+    // Nothing to chase: drift to the middle of the wood and wait for something to show up.
+    targetX = 1400;
+    targetY = 900;
+  }
 
-  // Repel from any wolf that is inside a comfortable radius, strongest when it is charging.
+  // Keep a little off the centre of whatever we are heading for, so we do not walk past it.
+  const dx = targetX - player.x;
+  const dy = targetY - player.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const stop = found ? 12 : 90;
+  const moveX = length > stop ? dx / length : 0;
+  const moveY = length > stop ? dy / length : 0;
+
+  // Strike when something is charging from close range.
+  let strike = false;
   for (const wolf of state.wolves) {
-    if (!wolf.active) continue;
-    const wx = player.x - wolf.x;
-    const wy = player.y - wolf.y;
-    const distance = Math.hypot(wx, wy) || 1;
-    const comfort = wolf.state === 2 ? WOLF.radius * 9 : WOLF.radius * 5;
-    if (distance > comfort) continue;
-    const push = (comfort - distance) / comfort;
-    dx += (wx / distance) * push * 260;
-    dy += (wy / distance) * push * 260;
+    if (!wolf.active || wolf.charging !== true) continue;
+    if (Math.hypot(wolf.x - player.x, wolf.y - player.y) < 130) strike = true;
   }
 
-  const length = Math.hypot(dx, dy);
-  if (length < 24) return { x: 0, y: 0 };
-  return { x: dx / length, y: dy / length };
-}
-
-/** Advance `world` by `seconds` with the autopilot, stopping early on game over. */
-function play(world, seconds) {
-  const stepSeconds = 1 / 60;
-  const steps = Math.round(seconds / stepSeconds);
-  for (let index = 0; index < steps; index += 1) {
-    const events = world.step(stepSeconds, autopilot(world.state), false);
-    if (events & EVENT_OVER) return true;
-  }
-  return false;
+  return { x: moveX, y: moveY, flare: strike && state.flares > 0 };
 }
 
 /**
- * Set `world` to the named scene (start, play, end or win; any other name is start) and return the
- * screen to draw over it and the best score to show.
+ * Advance a world by a number of steps under autopilot, so a staged frame is always a frame the
+ * rules could actually have produced.
  */
-/**
- * Play a whole run with the same autopilot the screenshots use, and report how it went. Exposed on
- * window so the game can be played to the end without a human in a headless check.
- */
-export function playFullRun(world, maxSeconds = 400) {
-  world.reset();
-  const stepSeconds = 1 / 60;
-  const steps = Math.round(maxSeconds / stepSeconds);
-  const trace = [];
+function play(world, steps) {
   for (let index = 0; index < steps; index += 1) {
-    const events = world.step(stepSeconds, autopilot(world.state), false);
-    if (index % 60 === 0) {
-      trace.push({
-        t: index / 60,
-        light: Math.round(world.state.light * 100),
-        night: world.state.night,
-        souls: world.state.soulsSaved,
-        score: world.state.score,
+    if (world.state.over) return;
+    const command = autopilot(world, null);
+    if (command.flare) world.strike();
+    world.step(1 / 60, command, false);
+  }
+}
+
+/**
+ * Play one whole run to its end, with a cap. Used by ?sim=1 so a headless check can confirm that a
+ * run finishes in a win or a loss rather than running forever.
+ */
+export function playFullRun(world, seconds = 400) {
+  const cap = Math.floor(Math.max(1, seconds) * 60);
+  let steps = 0;
+  window.__simTrace = [];
+  while (!world.state.over && steps < cap) {
+    const command = autopilot(world, null);
+    if (command.flare) world.strike();
+    const before = world.state.light;
+    world.step(1 / 60, command, false);
+    const st = world.state;
+    if (st.over || steps % 120 === 0) {
+      window.__simTrace.push({
+        t: Math.round(steps / 60), night: st.night, light: Number(st.light.toFixed(3)),
+        drop: Number((before - st.light).toFixed(4)), drinking: st.drinking,
       });
     }
-    if (events & EVENT_OVER) {
-      return { over: true, won: world.state.won, night: world.state.night, score: world.state.score, souls: world.state.soulsSaved, seconds: index / 60, trace };
-    }
+    steps += 1;
   }
-  return { over: false, night: world.state.night, score: world.state.score, souls: world.state.soulsSaved, seconds: maxSeconds, trace };
+  const state = world.state;
+  return {
+    region: state.region.id,
+    won: state.won,
+    over: state.over,
+    steps,
+    seconds: Math.round((steps / 60) * 10) / 10,
+    score: state.score,
+    souls: state.soulsSaved,
+    soulsTarget: state.soulsTarget,
+    nights: state.nightsSurvived,
+    nightCount: state.nightCount,
+    light: Math.round(state.light * 100) / 100,
+    capped: !state.over,
+  };
 }
 
-export function stageShot(name, world) {
-  world.reset();
+/**
+ * Build the world a screenshot needs and place it in the requested moment.
+ * Returns the screen to draw and the map cursor when the scene is the map.
+ */
+export function stageShot(name, world, save) {
+  const state = world.state;
 
-  if (name === 'play') {
-    play(world, 17);
-    // Bring the pack in close so the frame shows the game's actual tension: wolves at the edge
-    // of the lantern, a soul within reach, the meter already down.
-    const player = world.state.player;
-    const ring = [
-      { angle: 0.35, distance: 150, charging: true },
-      { angle: 2.35, distance: 185, charging: false },
-      { angle: 4.15, distance: 160, charging: true },
-    ];
-    world.state.wolves.forEach((wolf, index) => {
-      if (!wolf.active) return;
-      const spot = ring[index % ring.length];
-      wolf.x = player.x + Math.cos(spot.angle) * spot.distance;
-      wolf.y = player.y + Math.sin(spot.angle) * spot.distance;
-      if (spot.charging) {
-        const length = Math.hypot(player.x - wolf.x, player.y - wolf.y) || 1;
-        wolf.state = 2;
-        wolf.vx = ((player.x - wolf.x) / length) * 250;
-        wolf.vy = ((player.y - wolf.y) / length) * 250;
-        wolf.timer = 2;
-      }
-    });
-    for (const soul of world.state.souls) soul.active = false;
-    const near = world.state.souls[0];
-    near.active = true;
-    near.x = player.x + 168;
-    near.y = player.y - 96;
-    near.phase = 1.2;
-    return { screen: SCREEN_PLAY, best: 0 };
+  if (name === 'select') {
+    return { screen: SCREEN_SELECT, cursor: 2 };
+  }
+
+  if (name === 'start') {
+    play(world, 30);
+    return { screen: SCREEN_TITLE };
+  }
+
+  if (name === 'play' || name.startsWith('play-')) {
+    // Mid-run, with wolves committed, souls out, and the lantern a little worn.
+    play(world, 60 * 16);
+    for (const wolf of state.wolves) {
+      if (!wolf.active) continue;
+      const angle = Math.atan2(wolf.y - state.player.y, wolf.x - state.player.x);
+    wolf.x = state.player.x + Math.cos(angle) * 300;
+      wolf.y = state.player.y + Math.sin(angle) * 300;
+    }
+    return { screen: SCREEN_PLAY };
   }
 
   if (name === 'end') {
-    // Play until the lantern is nearly out, then let it go: the frame is the run ending.
-    play(world, 150);
-    world.state.light = 0.07;
-    play(world, 2.2);
-    return { screen: world.state.over ? SCREEN_OVER : SCREEN_PLAY, best: Math.max(240, world.state.score) };
+    // Run until the lantern dies, then show it. The light is forced low partway through so the
+    // scene reaches the ending in a bounded number of steps.
+    let guard = 0;
+    while (!state.over && guard < 60 * 300) {
+      const command = autopilot(world, null);
+      if (command.flare) world.strike();
+      world.step(1 / 60, command, false);
+      guard += 1;
+      if (guard === 60 * 40) state.light = 0.06;
+    }
+    return { screen: state.won ? SCREEN_WON : SCREEN_OVER };
   }
 
   if (name === 'win') {
-    play(world, 12);
-    world.state.night = 6;
-    world.state.nightsSurvived = 6;
-    world.state.won = true;
-    world.state.over = true;
-    world.state.score = Math.max(1480, world.state.score);
-    return { screen: SCREEN_WON, best: world.state.score };
+    // Hand the region its last night, then let the rules finish it.
+    play(world, 60 * 12);
+    state.night = state.nightCount;
+    state.nightElapsed = state.nights[state.nightCount - 1].seconds - 0.2;
+    state.light = Math.max(state.light, 0.55);
+    state.score = Math.max(state.score, 2400);
+    world.step(1 / 60, { x: 0, y: 0 }, false);
+    return { screen: state.won ? SCREEN_WON : SCREEN_OVER };
   }
 
-  play(world, START_SECONDS);
-  return { screen: SCREEN_TITLE, best: 0 };
+  // A region other than the first: used to shoot the other three.
+  return { screen: SCREEN_PLAY };
 }
